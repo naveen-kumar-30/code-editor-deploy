@@ -1,9 +1,14 @@
+const express = require("express");
 const fs = require("fs");
 const path = require("path");
-const PORT = process.env.PORT || 5000;  // Use Render's dynamic port or fallback to 5000
-const server = require("http").createServer(app);
-const io = require("socket.io")(server, { cors: { origin: "*" } });
+const http = require("http");
+const socketIo = require("socket.io");
 
+// Initialize the express app
+const app = express();
+const PORT = process.env.PORT || 5000;  // Use Render's dynamic port or fallback to 5000
+const server = http.createServer(app);
+const io = socketIo(server, { cors: { origin: "*" } });
 
 const DATA_FILE = path.join(__dirname, "data.json");
 
@@ -130,18 +135,17 @@ io.on("connection", (socket) => {
     io.to(socket.id).emit("commit-history", { commits: commitHistory[roomId] ? commitHistory[roomId].map(c => `${c.commitHash} - ${c.commitMessage}`) : [] });
   });
 
- socket.on("restore-code", ({ roomId, commitHash }) => {
-  const commit = commitHistory[roomId]?.find(c => c.commitHash === commitHash);
-  if (commit) {
-    roomCode[roomId] = { ...roomCode[roomId], [commit.language]: commit.code };  // Restore code in room
-    saveData();
+  socket.on("restore-code", ({ roomId, commitHash }) => {
+    const commit = commitHistory[roomId]?.find(c => c.commitHash === commitHash);
+    if (commit) {
+      roomCode[roomId] = { ...roomCode[roomId], [commit.language]: commit.code };  // Restore code in room
+      saveData();
 
-    // Send restored code and language to all users in the room
-    io.to(roomId).emit("code-update", { code: commit.code, language: commit.language });
-    io.to(roomId).emit("language-update", { language: commit.language, code: commit.code });
-  }
-});
-
+      // Send restored code and language to all users in the room
+      io.to(roomId).emit("code-update", { code: commit.code, language: commit.language });
+      io.to(roomId).emit("language-update", { language: commit.language, code: commit.code });
+    }
+  });
 
   // ✅ Handle generating a shareable link
   socket.on("generate-shareable-link", ({ code }) => {
@@ -162,4 +166,9 @@ io.on("connection", (socket) => {
       io.to(socket.id).emit("shared-code-error", { message: "Shared code not found!" });
     }
   });
+});
+
+// Start server
+server.listen(PORT, () => {
+  console.log(`Server is running on port ${PORT}`);
 });
