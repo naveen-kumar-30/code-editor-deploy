@@ -7,8 +7,7 @@ const io = new Server(5000, { cors: { origin: "*" } });
 const DATA_FILE = path.join(__dirname, "data.json");
 
 // Load existing data or initialize empty
-let { rooms, hosts, typingUsers, roomCode, sharedCode, commitHistory } = loadData();
-let chatHistory = {};  // ✅ Stores chat messages for each room
+let { rooms, hosts, typingUsers, roomCode, sharedCode, commitHistory, chatHistory } = loadData();
 
 function loadData() {
   try {
@@ -18,11 +17,15 @@ function loadData() {
   } catch (error) {
     console.error("Error loading data:", error);
   }
-  return { rooms: {}, hosts: {}, typingUsers: {}, roomCode: {}, sharedCode: {}, commitHistory: {} };
+  return { rooms: {}, hosts: {}, typingUsers: {}, roomCode: {}, sharedCode: {}, commitHistory: {}, chatHistory: {} };
 }
 
 function saveData() {
-  fs.writeFileSync(DATA_FILE, JSON.stringify({ rooms, hosts, typingUsers, roomCode, chatHistory, commitHistory, sharedCode }, null, 2));
+  try {
+    fs.writeFileSync(DATA_FILE, JSON.stringify({ rooms, hosts, typingUsers, roomCode, chatHistory, commitHistory, sharedCode }, null, 2));
+  } catch (error) {
+    console.error("Error saving data:", error);
+  }
 }
 
 io.on("connection", (socket) => {
