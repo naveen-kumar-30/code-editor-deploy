@@ -3,50 +3,36 @@ const fs = require("fs");
 const path = require("path");
 const http = require("http");
 const socketIo = require("socket.io");
-const { Worker } = require("worker_threads");
 
-// Initialize Express app & Server
 const app = express();
 const PORT = process.env.PORT || 5000;
 const server = http.createServer(app);
-const io = socketIo(server, { cors: { origin: "*" }, pingInterval: 500, pingTimeout: 1000 });
+const io = socketIo(server, { cors: { origin: "*" } });
 
 const DATA_FILE = path.join(__dirname, "data.json");
 
-// ✅ Load existing data or initialize empty
-let { rooms, hosts, typingUsers, roomCode, sharedCode, commitHistory, chatHistory } = loadData();
+// Load existing data or initialize empty
+let { rooms, hosts, typingUsers, roomCode, sharedCode } = loadData();
+let chatHistory = {};
+let commitHistory = {};
 
 function loadData() {
   try {
-    if (fs.existsSync(DATA_FILE)) return JSON.parse(fs.readFileSync(DATA_FILE, "utf8"));
+    if (fs.existsSync(DATA_FILE)) {
+      return JSON.parse(fs.readFileSync(DATA_FILE, "utf8"));
+    }
   } catch (error) {
     console.error("Error loading data:", error);
   }
-  return { rooms: {}, hosts: {}, typingUsers: {}, roomCode: {}, sharedCode: {}, commitHistory: {}, chatHistory: {} };
+  return { rooms: {}, hosts: {}, typingUsers: {}, roomCode: {}, sharedCode: {} };
 }
 
 function saveData() {
-  fs.writeFileSync(DATA_FILE, JSON.stringify({ rooms, hosts, typingUsers, roomCode, commitHistory, sharedCode, chatHistory }, null, 2));
+  fs.writeFileSync(DATA_FILE, JSON.stringify({ rooms, hosts, typingUsers, roomCode, commitHistory, sharedCode }, null, 2));
 }
 
-// ✅ Worker Thread for High-Performance Processing
-const worker = new Worker(`
-  const { parentPort } = require("worker_threads");
-  let roomCode = new Map();
-
-  parentPort.on("message", ({ roomId, code, language }) => {
-    if (!roomCode.has(roomId)) roomCode.set(roomId, {});
-    roomCode.get(roomId)[language] = code;
-    parentPort.postMessage({ roomId, code, language });
-  });
-`, { eval: true });
-
-worker.on("message", ({ roomId, code, language }) => {
-  io.to(roomId).emit("code-update", { code, language });
-});
-
 io.on("connection", (socket) => {
-  console.log("User Connected:", socket.id);
+  console.log(`User connected: ${socket.id}`);
 
   socket.on("join-room", ({ roomId, username }) => {
     socket.join(roomId);
@@ -59,7 +45,10 @@ io.on("connection", (socket) => {
       commitHistory[roomId] = [];
     }
 
-    if (!rooms[roomId].includes(username)) rooms[roomId].push(username);
+    if (!rooms[roomId].includes(username)) {
+      rooms[roomId].push(username);
+    }
+
     saveData();
 
     io.to(socket.id).emit("sync-all-code", roomCode[roomId]);
@@ -69,9 +58,16 @@ io.on("connection", (socket) => {
     io.to(roomId).emit("server-owner", hosts[roomId]);
   });
 
-  // ✅ Optimized Conflict-Free Code Updates
+  let lastUpdate = Date.now();
   socket.on("code-update", ({ roomId, code, language }) => {
-    worker.postMessage({ roomId, code, language });
+    if (!roomCode[roomId]) roomCode[roomId] = {};
+    
+    const now = Date.now();
+    if (now - lastUpdate > 50) {  // Limit updates to every 50ms
+      lastUpdate = now;
+      roomCode[roomId][language] = code;
+      io.to(roomId).emit("code-update", { code, language });
+    }
   });
 
   socket.on("language-update", ({ roomId, language }) => {
@@ -79,7 +75,6 @@ io.on("connection", (socket) => {
     io.to(roomId).emit("language-update", { language, code: savedCode });
   });
 
-  // ✅ Fast Typing Indicator Handling
   socket.on("typing", ({ roomId, username }) => {
     if (!typingUsers[roomId]) typingUsers[roomId] = new Set();
     typingUsers[roomId].add(username);
@@ -87,47 +82,48 @@ io.on("connection", (socket) => {
   });
 
   socket.on("stop-typing", ({ roomId, username }) => {
-    typingUsers[roomId]?.delete(username);
-    io.to(roomId).emit("user-typing", Array.from(typingUsers[roomId]));
+    if (typingUsers[roomId]) {
+      typingUsers[roomId].delete(username);
+      io.to(roomId).emit("user-typing", Array.from(typingUsers[roomId]));
+    }
   });
 
-  // ✅ Real-Time Chat Handling
   socket.on("send-message", ({ roomId, username, message }) => {
     if (!chatHistory[roomId]) chatHistory[roomId] = [];
     chatHistory[roomId].push({ username, message });
-
     io.to(roomId).emit("receive-message", { username, message });
   });
 
   socket.on("leave-room", ({ roomId, username }) => {
-    if (!rooms[roomId]) return;
-
-    rooms[roomId] = rooms[roomId].filter((user) => user !== username);
-    if (hosts[roomId] === username) hosts[roomId] = rooms[roomId][0] || null;
-
-    saveData();
-    io.to(roomId).emit("user-list", rooms[roomId]);
-    io.to(roomId).emit("server-owner", hosts[roomId]);
+    if (rooms[roomId]) {
+      rooms[roomId] = rooms[roomId].filter((user) => user !== username);
+      if (hosts[roomId] === username) {
+        hosts[roomId] = rooms[roomId].length > 0 ? rooms[roomId][0] : null;
+        io.to(roomId).emit("server-owner", hosts[roomId]);
+      }
+      io.to(roomId).emit("user-list", rooms[roomId]);
+    }
   });
 
   socket.on("disconnect", () => {
     for (let room in rooms) {
       rooms[room] = rooms[room].filter((user) => user !== socket.id);
-      if (hosts[room] === socket.id) hosts[room] = rooms[room][0] || null;
+      if (hosts[room] === socket.id) {
+        hosts[room] = rooms[room].length > 0 ? rooms[room][0] : null;
+        io.to(room).emit("server-owner", hosts[room]);
+      }
+      io.to(room).emit("user-list", rooms[room]);
     }
-    saveData();
   });
 
-  // ✅ Code Version Control (Commit & Restore)
   socket.on("commit-code", ({ roomId, code, language, commitMessage }) => {
     if (!commitHistory[roomId]) commitHistory[roomId] = [];
 
     const timestamp = new Date().toISOString();
     const commitHash = `${timestamp}-${Math.random().toString(36).substr(2, 5)}`;
+    const commitEntry = { commitHash, timestamp, commitMessage, language, code };
 
-    commitHistory[roomId].push({ commitHash, timestamp, commitMessage, language, code });
-    saveData();
-
+    commitHistory[roomId].push(commitEntry);
     io.to(roomId).emit("commit-history", commitHistory[roomId]);
   });
 
@@ -136,32 +132,29 @@ io.on("connection", (socket) => {
   });
 
   socket.on("restore-code", ({ roomId, commitHash }) => {
-    const commit = commitHistory[roomId]?.find((c) => c.commitHash === commitHash);
-    if (!commit) return;
-
-    roomCode[roomId][commit.language] = commit.code;
-    saveData();
-
-    io.to(roomId).emit("code-update", { code: commit.code, language: commit.language });
-    io.to(roomId).emit("language-update", { language: commit.language, code: commit.code });
+    const commit = commitHistory[roomId]?.find(c => c.commitHash === commitHash);
+    if (commit) {
+      roomCode[roomId][commit.language] = commit.code;
+      io.to(roomId).emit("code-update", { code: commit.code, language: commit.language });
+      io.to(roomId).emit("language-update", { language: commit.language, code: commit.code });
+    }
   });
 
-  // ✅ Shareable Code Links
   socket.on("generate-shareable-link", ({ code }) => {
     const shareId = Math.random().toString(36).substr(2, 9);
     sharedCode[shareId] = code;
-    saveData();
-
     io.to(socket.id).emit("shareable-link", { shareUrl: `http://localhost:3000/codeeditor?shared=${shareId}` });
   });
 
   socket.on("load-shared-code", ({ shareId }) => {
-    const code = sharedCode[shareId];
-    if (!code) return io.to(socket.id).emit("shared-code-error", { message: "Shared code not found!" });
-
-    io.to(socket.id).emit("shared-code-loaded", { code });
+    if (sharedCode[shareId]) {
+      io.to(socket.id).emit("shared-code-loaded", { code: sharedCode[shareId] });
+    } else {
+      io.to(socket.id).emit("shared-code-error", { message: "Shared code not found!" });
+    }
   });
 });
 
-// ✅ Run High-Performance Server
-server.listen(PORT, () => console.log(`🔥 Server running on port ${PORT}`));
+server.listen(PORT, () => {
+  console.log(`Server running on port ${PORT}`);
+});
