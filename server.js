@@ -1,5 +1,5 @@
 const express = require("express");
-const fs = require("fs").promises;  // Use promise-based fs methods
+const fs = require("fs").promises; // Use promise-based fs methods
 const path = require("path");
 const http = require("http");
 const socketIo = require("socket.io");
@@ -18,14 +18,17 @@ const loadData = async () => {
     return JSON.parse(data);
   } catch (error) {
     console.error("Error loading data:", error);
-    return {};  // Return empty object if file doesn't exist or is unreadable
+    return {}; // Return empty object if file doesn't exist or is unreadable
   }
 };
 
 // Save data asynchronously
 const saveData = async () => {
   try {
-    await fs.writeFile(DATA_FILE, JSON.stringify({ rooms, hosts, typingUsers, roomCode, commitHistory, sharedCode }, null, 2));
+    await fs.writeFile(
+      DATA_FILE,
+      JSON.stringify({ rooms, hosts, typingUsers, roomCode, commitHistory, sharedCode }, null, 2)
+    );
   } catch (error) {
     console.error("Error saving data:", error);
   }
@@ -51,6 +54,9 @@ let sharedCode = {};
   sharedCode = data.sharedCode || {};
 })();
 
+// Store debounced timers for each room
+const codeUpdateTimers = {};
+
 io.on("connection", (socket) => {
   console.log("New user connected:", socket.id);
 
@@ -74,11 +80,19 @@ io.on("connection", (socket) => {
     io.to(roomId).emit("server-owner", hosts[roomId]);
   });
 
-  socket.on("code-update", async ({ roomId, code, language }) => {
+  // ✅ Debounced "code-update" to prevent typing lag
+  socket.on("code-update", ({ roomId, code, language }) => {
     if (!roomCode[roomId]) roomCode[roomId] = {};
-    roomCode[roomId][language] = code;
-    await saveData();
-    io.to(roomId).emit("code-update", { code, language });
+
+    // Cancel previous timer if exists
+    if (codeUpdateTimers[roomId]) clearTimeout(codeUpdateTimers[roomId]);
+
+    // Set a new timer (200ms debounce)
+    codeUpdateTimers[roomId] = setTimeout(async () => {
+      roomCode[roomId][language] = code;
+      await saveData();
+      io.to(roomId).emit("code-update", { code, language });
+    }, 200); // Adjust delay as needed
   });
 
   socket.on("language-update", ({ roomId, language }) => {
@@ -165,5 +179,4 @@ io.on("connection", (socket) => {
   });
 });
 
-server.listen(PORT, () => console.log(`Server running on port ${PORT}`));
-s
+server.listen(PORT, () => console.log(`🚀 Server running on port ${PORT}`));
