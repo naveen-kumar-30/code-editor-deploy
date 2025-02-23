@@ -1,8 +1,9 @@
 const fs = require("fs");
 const path = require("path");
-const io = require("socket.io")(5000, {
-  cors: { origin: "*" }
-});
+const PORT = process.env.PORT || 5000;  // Use Render's dynamic port or fallback to 5000
+const server = require("http").createServer(app);
+const io = require("socket.io")(server, { cors: { origin: "*" } });
+
 
 const DATA_FILE = path.join(__dirname, "data.json");
 
