@@ -77,7 +77,7 @@ io.on("connection", (socket) => {
     io.to(roomId).emit("server-owner", hosts[roomId]);
   });
 
-  // ✅ Faster Debounced "code-update" (100ms for Real-time Feel)
+  // ✅ Increased Debounce Time (500ms) to Reduce Lag
   socket.on("code-update", ({ roomId, code, language }) => {
     if (!roomCode[roomId]) roomCode[roomId] = {};
 
@@ -87,7 +87,7 @@ io.on("connection", (socket) => {
       roomCode[roomId][language] = code;
       saveData();
       io.to(roomId).emit("code-update", { code, language });
-    }, 100); // Faster debounce time
+    }, 500); // Increased debounce time to reduce lag
   });
 
   socket.on("language-update", ({ roomId, language }) => {
