@@ -1,27 +1,39 @@
 const express = require("express");
+const fs = require("fs");
+const path = require("path");
 const http = require("http");
 const socketIo = require("socket.io");
 const { Worker } = require("worker_threads");
 
+// Initialize Express app & Server
 const app = express();
 const PORT = process.env.PORT || 5000;
 const server = http.createServer(app);
 const io = socketIo(server, { cors: { origin: "*" }, pingInterval: 500, pingTimeout: 1000 });
 
-// **🔥 Optimized Real-Time Storage**
-let rooms = new Map();
-let hosts = new Map();
-let typingUsers = new Map();
-let roomCode = new Map();
-let chatHistory = new Map();
-let commitHistory = new Map();
-let sharedCode = new Map();
+const DATA_FILE = path.join(__dirname, "data.json");
 
-// **🚀 Worker Thread for Heavy CPU Processing (Prevents Blocking)**
+// ✅ Load existing data or initialize empty
+let { rooms, hosts, typingUsers, roomCode, sharedCode, commitHistory, chatHistory } = loadData();
+
+function loadData() {
+  try {
+    if (fs.existsSync(DATA_FILE)) return JSON.parse(fs.readFileSync(DATA_FILE, "utf8"));
+  } catch (error) {
+    console.error("Error loading data:", error);
+  }
+  return { rooms: {}, hosts: {}, typingUsers: {}, roomCode: {}, sharedCode: {}, commitHistory: {}, chatHistory: {} };
+}
+
+function saveData() {
+  fs.writeFileSync(DATA_FILE, JSON.stringify({ rooms, hosts, typingUsers, roomCode, commitHistory, sharedCode, chatHistory }, null, 2));
+}
+
+// ✅ Worker Thread for High-Performance Processing
 const worker = new Worker(`
   const { parentPort } = require("worker_threads");
   let roomCode = new Map();
-  
+
   parentPort.on("message", ({ roomId, code, language }) => {
     if (!roomCode.has(roomId)) roomCode.set(roomId, {});
     roomCode.get(roomId)[language] = code;
@@ -38,109 +50,118 @@ io.on("connection", (socket) => {
 
   socket.on("join-room", ({ roomId, username }) => {
     socket.join(roomId);
-    
-    if (!rooms.has(roomId)) {
-      rooms.set(roomId, new Set());
-      hosts.set(roomId, username);
-      roomCode.set(roomId, {});
-      chatHistory.set(roomId, []);
-      commitHistory.set(roomId, []);
+
+    if (!rooms[roomId]) {
+      rooms[roomId] = [];
+      hosts[roomId] = username;
+      roomCode[roomId] = {};
+      chatHistory[roomId] = [];
+      commitHistory[roomId] = [];
     }
 
-    rooms.get(roomId).add(username);
+    if (!rooms[roomId].includes(username)) rooms[roomId].push(username);
+    saveData();
 
-    io.to(socket.id).emit("sync-all-code", roomCode.get(roomId));
-    io.to(socket.id).emit("chat-history", chatHistory.get(roomId));
-    io.to(socket.id).emit("commit-history", commitHistory.get(roomId));
-    io.to(roomId).emit("user-list", Array.from(rooms.get(roomId)));
-    io.to(roomId).emit("server-owner", hosts.get(roomId));
+    io.to(socket.id).emit("sync-all-code", roomCode[roomId]);
+    io.to(socket.id).emit("chat-history", chatHistory[roomId]);
+    io.to(socket.id).emit("commit-history", commitHistory[roomId]);
+    io.to(roomId).emit("user-list", rooms[roomId]);
+    io.to(roomId).emit("server-owner", hosts[roomId]);
   });
 
-  // **🚀 Instant Code Updates with Conflict-Free Handling**
+  // ✅ Optimized Conflict-Free Code Updates
   socket.on("code-update", ({ roomId, code, language }) => {
     worker.postMessage({ roomId, code, language });
   });
 
   socket.on("language-update", ({ roomId, language }) => {
-    const savedCode = roomCode.get(roomId)?.[language] || "// Start coding...";
+    let savedCode = roomCode[roomId]?.[language] || "// Start coding...";
     io.to(roomId).emit("language-update", { language, code: savedCode });
   });
 
-  // **🔥 Fast Typing Indicator Updates**
+  // ✅ Fast Typing Indicator Handling
   socket.on("typing", ({ roomId, username }) => {
-    if (!typingUsers.has(roomId)) typingUsers.set(roomId, new Set());
-    typingUsers.get(roomId).add(username);
-    io.to(roomId).emit("user-typing", Array.from(typingUsers.get(roomId)));
+    if (!typingUsers[roomId]) typingUsers[roomId] = new Set();
+    typingUsers[roomId].add(username);
+    io.to(roomId).emit("user-typing", Array.from(typingUsers[roomId]));
   });
 
   socket.on("stop-typing", ({ roomId, username }) => {
-    typingUsers.get(roomId)?.delete(username);
-    io.to(roomId).emit("user-typing", Array.from(typingUsers.get(roomId)));
+    typingUsers[roomId]?.delete(username);
+    io.to(roomId).emit("user-typing", Array.from(typingUsers[roomId]));
   });
 
-  // **📩 Real-Time Chat Without Lag**
+  // ✅ Real-Time Chat Handling
   socket.on("send-message", ({ roomId, username, message }) => {
-    if (!chatHistory.has(roomId)) chatHistory.set(roomId, []);
-    chatHistory.get(roomId).push({ username, message });
+    if (!chatHistory[roomId]) chatHistory[roomId] = [];
+    chatHistory[roomId].push({ username, message });
+
     io.to(roomId).emit("receive-message", { username, message });
   });
 
-  // **🚀 Handle User Leaving Room**
   socket.on("leave-room", ({ roomId, username }) => {
-    if (!rooms.has(roomId)) return;
-    rooms.get(roomId).delete(username);
-    if (hosts.get(roomId) === username) hosts.set(roomId, Array.from(rooms.get(roomId))[0] || null);
+    if (!rooms[roomId]) return;
 
-    io.to(roomId).emit("user-list", Array.from(rooms.get(roomId)));
-    io.to(roomId).emit("server-owner", hosts.get(roomId));
+    rooms[roomId] = rooms[roomId].filter((user) => user !== username);
+    if (hosts[roomId] === username) hosts[roomId] = rooms[roomId][0] || null;
+
+    saveData();
+    io.to(roomId).emit("user-list", rooms[roomId]);
+    io.to(roomId).emit("server-owner", hosts[roomId]);
   });
 
-  // **🛑 Handle Disconnection**
   socket.on("disconnect", () => {
-    rooms.forEach((users, room) => {
-      users.delete(socket.id);
-      if (hosts.get(room) === socket.id) hosts.set(room, Array.from(users)[0] || null);
-    });
+    for (let room in rooms) {
+      rooms[room] = rooms[room].filter((user) => user !== socket.id);
+      if (hosts[room] === socket.id) hosts[room] = rooms[room][0] || null;
+    }
+    saveData();
   });
 
-  // **💾 Instant Commit History Updates**
+  // ✅ Code Version Control (Commit & Restore)
   socket.on("commit-code", ({ roomId, code, language, commitMessage }) => {
-    if (!commitHistory.has(roomId)) commitHistory.set(roomId, []);
+    if (!commitHistory[roomId]) commitHistory[roomId] = [];
 
     const timestamp = new Date().toISOString();
     const commitHash = `${timestamp}-${Math.random().toString(36).substr(2, 5)}`;
-    commitHistory.get(roomId).push({ commitHash, timestamp, commitMessage, language, code });
 
-    io.to(roomId).emit("commit-history", commitHistory.get(roomId));
+    commitHistory[roomId].push({ commitHash, timestamp, commitMessage, language, code });
+    saveData();
+
+    io.to(roomId).emit("commit-history", commitHistory[roomId]);
   });
 
   socket.on("get-commit-history", ({ roomId }) => {
-    io.to(socket.id).emit("commit-history", commitHistory.get(roomId) || []);
+    io.to(socket.id).emit("commit-history", commitHistory[roomId] || []);
   });
 
-  // **🔄 Instant Code Restore**
   socket.on("restore-code", ({ roomId, commitHash }) => {
-    const commit = commitHistory.get(roomId)?.find(c => c.commitHash === commitHash);
+    const commit = commitHistory[roomId]?.find((c) => c.commitHash === commitHash);
     if (!commit) return;
 
-    roomCode.get(roomId)[commit.language] = commit.code;
+    roomCode[roomId][commit.language] = commit.code;
+    saveData();
 
     io.to(roomId).emit("code-update", { code: commit.code, language: commit.language });
     io.to(roomId).emit("language-update", { language: commit.language, code: commit.code });
   });
 
-  // **🔗 Fast Shareable Links**
+  // ✅ Shareable Code Links
   socket.on("generate-shareable-link", ({ code }) => {
     const shareId = Math.random().toString(36).substr(2, 9);
-    sharedCode.set(shareId, code);
+    sharedCode[shareId] = code;
+    saveData();
 
     io.to(socket.id).emit("shareable-link", { shareUrl: `http://localhost:3000/codeeditor?shared=${shareId}` });
   });
 
   socket.on("load-shared-code", ({ shareId }) => {
-    io.to(socket.id).emit(sharedCode.has(shareId) ? "shared-code-loaded" : "shared-code-error", sharedCode.get(shareId) ? { code: sharedCode.get(shareId) } : { message: "Shared code not found!" });
+    const code = sharedCode[shareId];
+    if (!code) return io.to(socket.id).emit("shared-code-error", { message: "Shared code not found!" });
+
+    io.to(socket.id).emit("shared-code-loaded", { code });
   });
 });
 
-// **🚀 Run the High-Performance Server**
-server.listen(PORT, () => console.log(`🔥 High-Performance Server Running on port ${PORT}`));
+// ✅ Run High-Performance Server
+server.listen(PORT, () => console.log(`🔥 Server running on port ${PORT}`));
