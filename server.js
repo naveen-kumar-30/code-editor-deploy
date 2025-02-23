@@ -1,5 +1,5 @@
 const express = require("express");
-const fs = require("fs").promises; // Use promise-based fs methods
+const fs = require("fs");
 const path = require("path");
 const http = require("http");
 const socketIo = require("socket.io");
@@ -11,21 +11,20 @@ const io = socketIo(server, { cors: { origin: "*" } });
 
 const DATA_FILE = path.join(__dirname, "data.json");
 
-// Load data asynchronously
-const loadData = async () => {
+// Load data synchronously for faster startup
+const loadData = () => {
   try {
-    const data = await fs.readFile(DATA_FILE, "utf8");
-    return JSON.parse(data);
+    return JSON.parse(fs.readFileSync(DATA_FILE, "utf8"));
   } catch (error) {
     console.error("Error loading data:", error);
-    return {}; // Return empty object if file doesn't exist or is unreadable
+    return {};
   }
 };
 
-// Save data asynchronously
-const saveData = async () => {
+// Save data synchronously for instant writes
+const saveData = () => {
   try {
-    await fs.writeFile(
+    fs.writeFileSync(
       DATA_FILE,
       JSON.stringify({ rooms, hosts, typingUsers, roomCode, commitHistory, sharedCode }, null, 2)
     );
@@ -44,15 +43,13 @@ let commitHistory = {};
 let sharedCode = {};
 
 // Load data on startup
-(async () => {
-  const data = await loadData();
-  rooms = data.rooms || {};
-  hosts = data.hosts || {};
-  typingUsers = data.typingUsers || {};
-  roomCode = data.roomCode || {};
-  commitHistory = data.commitHistory || {};
-  sharedCode = data.sharedCode || {};
-})();
+const data = loadData();
+rooms = data.rooms || {};
+hosts = data.hosts || {};
+typingUsers = data.typingUsers || {};
+roomCode = data.roomCode || {};
+commitHistory = data.commitHistory || {};
+sharedCode = data.sharedCode || {};
 
 // Store debounced timers for each room
 const codeUpdateTimers = {};
@@ -60,7 +57,7 @@ const codeUpdateTimers = {};
 io.on("connection", (socket) => {
   console.log("New user connected:", socket.id);
 
-  socket.on("join-room", async ({ roomId, username }) => {
+  socket.on("join-room", ({ roomId, username }) => {
     socket.join(roomId);
 
     rooms[roomId] = rooms[roomId] || [];
@@ -71,7 +68,7 @@ io.on("connection", (socket) => {
 
     if (!rooms[roomId].includes(username)) rooms[roomId].push(username);
 
-    await saveData();
+    saveData();
 
     io.to(socket.id).emit("sync-all-code", roomCode[roomId]);
     io.to(socket.id).emit("chat-history", chatHistory[roomId]);
@@ -80,19 +77,17 @@ io.on("connection", (socket) => {
     io.to(roomId).emit("server-owner", hosts[roomId]);
   });
 
-  // ✅ Debounced "code-update" to prevent typing lag
+  // ✅ Faster Debounced "code-update" (100ms for Real-time Feel)
   socket.on("code-update", ({ roomId, code, language }) => {
     if (!roomCode[roomId]) roomCode[roomId] = {};
 
-    // Cancel previous timer if exists
     if (codeUpdateTimers[roomId]) clearTimeout(codeUpdateTimers[roomId]);
 
-    // Set a new timer (200ms debounce)
-    codeUpdateTimers[roomId] = setTimeout(async () => {
+    codeUpdateTimers[roomId] = setTimeout(() => {
       roomCode[roomId][language] = code;
-      await saveData();
+      saveData();
       io.to(roomId).emit("code-update", { code, language });
-    }, 200); // Adjust delay as needed
+    }, 100); // Faster debounce time
   });
 
   socket.on("language-update", ({ roomId, language }) => {
@@ -118,26 +113,26 @@ io.on("connection", (socket) => {
     io.to(roomId).emit("receive-message", chatMessage);
   });
 
-  socket.on("leave-room", async ({ roomId, username }) => {
+  socket.on("leave-room", ({ roomId, username }) => {
     if (!rooms[roomId]) return;
 
     rooms[roomId] = rooms[roomId].filter(user => user !== username);
     if (hosts[roomId] === username) hosts[roomId] = rooms[roomId][0] || null;
 
-    await saveData();
+    saveData();
     io.to(roomId).emit("user-list", rooms[roomId]);
     io.to(roomId).emit("server-owner", hosts[roomId]);
   });
 
-  socket.on("disconnect", async () => {
+  socket.on("disconnect", () => {
     for (const room in rooms) {
       rooms[room] = rooms[room].filter(user => user !== socket.id);
       if (hosts[room] === socket.id) hosts[room] = rooms[room][0] || null;
     }
-    await saveData();
+    saveData();
   });
 
-  socket.on("commit-code", async ({ roomId, code, language, commitMessage }) => {
+  socket.on("commit-code", ({ roomId, code, language, commitMessage }) => {
     if (!commitHistory[roomId]) commitHistory[roomId] = [];
 
     const timestamp = new Date().toISOString();
@@ -145,7 +140,7 @@ io.on("connection", (socket) => {
     const commitEntry = { commitHash, timestamp, commitMessage, language, code };
 
     commitHistory[roomId].push(commitEntry);
-    await saveData();
+    saveData();
 
     io.to(roomId).emit("commit-history", commitHistory[roomId].map(c => `${c.commitHash} - ${c.commitMessage}`));
   });
@@ -154,21 +149,21 @@ io.on("connection", (socket) => {
     io.to(socket.id).emit("commit-history", commitHistory[roomId]?.map(c => `${c.commitHash} - ${c.commitMessage}`) || []);
   });
 
-  socket.on("restore-code", async ({ roomId, commitHash }) => {
+  socket.on("restore-code", ({ roomId, commitHash }) => {
     const commit = commitHistory[roomId]?.find(c => c.commitHash === commitHash);
     if (!commit) return;
 
     roomCode[roomId] = { ...roomCode[roomId], [commit.language]: commit.code };
-    await saveData();
+    saveData();
 
     io.to(roomId).emit("code-update", { code: commit.code, language: commit.language });
     io.to(roomId).emit("language-update", { language: commit.language, code: commit.code });
   });
 
-  socket.on("generate-shareable-link", async ({ code }) => {
+  socket.on("generate-shareable-link", ({ code }) => {
     const shareId = Math.random().toString(36).substr(2, 9);
     sharedCode[shareId] = code;
-    await saveData();
+    saveData();
 
     io.to(socket.id).emit("shareable-link", { shareUrl: `http://localhost:3000/codeeditor?shared=${shareId}` });
   });
