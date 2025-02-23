@@ -2,6 +2,8 @@ const express = require("express");
 const fs = require("fs");
 const path = require("path");
 const http = require("http");
+const { WebrtcProvider } = require("y-webrtc");
+const Y = require("yjs");
 const socketIo = require("socket.io");
 
 const app = express();
@@ -15,6 +17,7 @@ const DATA_FILE = path.join(__dirname, "data.json");
 let { rooms, hosts, typingUsers, roomCode, sharedCode } = loadData();
 let chatHistory = {};
 let commitHistory = {};
+let yDocs = {}; // Yjs Documents for each room
 
 function loadData() {
   try {
@@ -32,7 +35,7 @@ function saveData() {
 }
 
 io.on("connection", (socket) => {
-  console.log(`User connected: ${socket.id}`);
+  console.log("New user connected");
 
   socket.on("join-room", ({ roomId, username }) => {
     socket.join(roomId);
@@ -43,6 +46,8 @@ io.on("connection", (socket) => {
       roomCode[roomId] = {};
       chatHistory[roomId] = [];
       commitHistory[roomId] = [];
+      yDocs[roomId] = new Y.Doc(); // Create Yjs document for room
+      new WebrtcProvider(roomId, yDocs[roomId]); // Attach WebRTC
     }
 
     if (!rooms[roomId].includes(username)) {
@@ -50,29 +55,11 @@ io.on("connection", (socket) => {
     }
 
     saveData();
-
     io.to(socket.id).emit("sync-all-code", roomCode[roomId]);
     io.to(socket.id).emit("chat-history", chatHistory[roomId]);
-    io.to(socket.id).emit("commit-history", commitHistory[roomId]);
+    io.to(socket.id).emit("commit-history", { commits: commitHistory[roomId].map(c => `${c.commitHash} - ${c.commitMessage}`) });
     io.to(roomId).emit("user-list", rooms[roomId]);
     io.to(roomId).emit("server-owner", hosts[roomId]);
-  });
-
-  let lastUpdate = Date.now();
-  socket.on("code-update", ({ roomId, code, language }) => {
-    if (!roomCode[roomId]) roomCode[roomId] = {};
-    
-    const now = Date.now();
-    if (now - lastUpdate > 50) {  // Limit updates to every 50ms
-      lastUpdate = now;
-      roomCode[roomId][language] = code;
-      io.to(roomId).emit("code-update", { code, language });
-    }
-  });
-
-  socket.on("language-update", ({ roomId, language }) => {
-    let savedCode = roomCode[roomId]?.[language] || "// Start coding...";
-    io.to(roomId).emit("language-update", { language, code: savedCode });
   });
 
   socket.on("typing", ({ roomId, username }) => {
@@ -88,10 +75,13 @@ io.on("connection", (socket) => {
     }
   });
 
+  // ✅ Handle chat messages
   socket.on("send-message", ({ roomId, username, message }) => {
     if (!chatHistory[roomId]) chatHistory[roomId] = [];
-    chatHistory[roomId].push({ username, message });
-    io.to(roomId).emit("receive-message", { username, message });
+    const chatMessage = { username, message };
+
+    chatHistory[roomId].push(chatMessage);
+    io.to(roomId).emit("receive-message", chatMessage);
   });
 
   socket.on("leave-room", ({ roomId, username }) => {
@@ -101,6 +91,7 @@ io.on("connection", (socket) => {
         hosts[roomId] = rooms[roomId].length > 0 ? rooms[roomId][0] : null;
         io.to(roomId).emit("server-owner", hosts[roomId]);
       }
+      saveData();
       io.to(roomId).emit("user-list", rooms[roomId]);
     }
   });
@@ -112,10 +103,12 @@ io.on("connection", (socket) => {
         hosts[room] = rooms[room].length > 0 ? rooms[room][0] : null;
         io.to(room).emit("server-owner", hosts[room]);
       }
+      saveData();
       io.to(room).emit("user-list", rooms[room]);
     }
   });
 
+  // ✅ Handle committing code changes
   socket.on("commit-code", ({ roomId, code, language, commitMessage }) => {
     if (!commitHistory[roomId]) commitHistory[roomId] = [];
 
@@ -124,37 +117,48 @@ io.on("connection", (socket) => {
     const commitEntry = { commitHash, timestamp, commitMessage, language, code };
 
     commitHistory[roomId].push(commitEntry);
-    io.to(roomId).emit("commit-history", commitHistory[roomId]);
+    saveData();
+
+    io.to(roomId).emit("commit-history", { commits: commitHistory[roomId].map(c => `${c.commitHash} - ${c.commitMessage}`) });
   });
 
   socket.on("get-commit-history", ({ roomId }) => {
-    io.to(socket.id).emit("commit-history", commitHistory[roomId] || []);
+    io.to(socket.id).emit("commit-history", { commits: commitHistory[roomId] ? commitHistory[roomId].map(c => `${c.commitHash} - ${c.commitMessage}`) : [] });
   });
 
   socket.on("restore-code", ({ roomId, commitHash }) => {
     const commit = commitHistory[roomId]?.find(c => c.commitHash === commitHash);
     if (commit) {
-      roomCode[roomId][commit.language] = commit.code;
+      roomCode[roomId] = { ...roomCode[roomId], [commit.language]: commit.code };
+      saveData();
+
       io.to(roomId).emit("code-update", { code: commit.code, language: commit.language });
       io.to(roomId).emit("language-update", { language: commit.language, code: commit.code });
     }
   });
 
+  // ✅ Handle generating a shareable link
   socket.on("generate-shareable-link", ({ code }) => {
     const shareId = Math.random().toString(36).substr(2, 9);
     sharedCode[shareId] = code;
-    io.to(socket.id).emit("shareable-link", { shareUrl: `http://localhost:3000/codeeditor?shared=${shareId}` });
+    saveData();
+
+    const shareUrl = `http://localhost:3000/codeeditor?shared=${shareId}`;
+    io.to(socket.id).emit("shareable-link", { shareUrl });
   });
 
+  // ✅ Load shared code
   socket.on("load-shared-code", ({ shareId }) => {
-    if (sharedCode[shareId]) {
-      io.to(socket.id).emit("shared-code-loaded", { code: sharedCode[shareId] });
+    const code = sharedCode[shareId];
+    if (code) {
+      io.to(socket.id).emit("shared-code-loaded", { code });
     } else {
       io.to(socket.id).emit("shared-code-error", { message: "Shared code not found!" });
     }
   });
 });
 
+// Start server
 server.listen(PORT, () => {
-  console.log(`Server running on port ${PORT}`);
+  console.log(`🚀 Server running on port ${PORT}`);
 });
