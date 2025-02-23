@@ -1,5 +1,5 @@
 const express = require("express");
-const fs = require("fs").promises;  // Use promise-based fs methods
+const fs = require("fs").promises;
 const path = require("path");
 const http = require("http");
 const socketIo = require("socket.io");
@@ -11,27 +11,32 @@ const io = socketIo(server, { cors: { origin: "*" } });
 
 const DATA_FILE = path.join(__dirname, "data.json");
 
-// Load data asynchronously
+// Load Data Asynchronously on Startup
 const loadData = async () => {
   try {
     const data = await fs.readFile(DATA_FILE, "utf8");
     return JSON.parse(data);
-  } catch (error) {
-    console.error("Error loading data:", error);
-    return {};  // Return empty object if file doesn't exist or is unreadable
+  } catch {
+    return {}; // Return empty object if file doesn't exist
   }
 };
 
-// Save data asynchronously
+// **🌟 Batched Data Saving (Every 5 seconds)**
+let savePending = false;
 const saveData = async () => {
-  try {
-    await fs.writeFile(DATA_FILE, JSON.stringify({ rooms, hosts, typingUsers, roomCode, commitHistory, sharedCode }, null, 2));
-  } catch (error) {
-    console.error("Error saving data:", error);
-  }
+  if (savePending) return;
+  savePending = true;
+  setTimeout(async () => {
+    try {
+      await fs.writeFile(DATA_FILE, JSON.stringify({ rooms, hosts, typingUsers, roomCode, commitHistory, sharedCode }, null, 2));
+    } catch (error) {
+      console.error("Error saving data:", error);
+    }
+    savePending = false;
+  }, 5000); // Save every 5 seconds instead of every event
 };
 
-// Initialize memory data
+// **🚀 Optimized In-Memory Data Storage**
 let rooms = {};
 let hosts = {};
 let typingUsers = {};
@@ -40,7 +45,7 @@ let chatHistory = {};
 let commitHistory = {};
 let sharedCode = {};
 
-// Load data on startup
+// **🔄 Load Data into Memory at Startup**
 (async () => {
   const data = await loadData();
   rooms = data.rooms || {};
@@ -52,7 +57,7 @@ let sharedCode = {};
 })();
 
 io.on("connection", (socket) => {
-  console.log("New user connected:", socket.id);
+  console.log("User Connected:", socket.id);
 
   socket.on("join-room", async ({ roomId, username }) => {
     socket.join(roomId);
@@ -74,11 +79,18 @@ io.on("connection", (socket) => {
     io.to(roomId).emit("server-owner", hosts[roomId]);
   });
 
-  socket.on("code-update", async ({ roomId, code, language }) => {
+  // **✅ Optimized Code Update with Debounce**
+  const codeUpdateTimers = {};
+  socket.on("code-update", ({ roomId, code, language }) => {
     if (!roomCode[roomId]) roomCode[roomId] = {};
-    roomCode[roomId][language] = code;
-    await saveData();
-    io.to(roomId).emit("code-update", { code, language });
+
+    if (codeUpdateTimers[roomId]) clearTimeout(codeUpdateTimers[roomId]);
+
+    codeUpdateTimers[roomId] = setTimeout(async () => {
+      roomCode[roomId][language] = code;
+      await saveData();
+      io.to(roomId).emit("code-update", { code, language });
+    }, 500);
   });
 
   socket.on("language-update", ({ roomId, language }) => {
@@ -86,6 +98,7 @@ io.on("connection", (socket) => {
     io.to(roomId).emit("language-update", { language, code: savedCode });
   });
 
+  // **🔥 Optimized Typing Indicator using Set**
   socket.on("typing", ({ roomId, username }) => {
     if (!typingUsers[roomId]) typingUsers[roomId] = new Set();
     typingUsers[roomId].add(username);
@@ -99,14 +112,12 @@ io.on("connection", (socket) => {
 
   socket.on("send-message", ({ roomId, username, message }) => {
     if (!chatHistory[roomId]) chatHistory[roomId] = [];
-    const chatMessage = { username, message };
-    chatHistory[roomId].push(chatMessage);
-    io.to(roomId).emit("receive-message", chatMessage);
+    chatHistory[roomId].push({ username, message });
+    io.to(roomId).emit("receive-message", { username, message });
   });
 
   socket.on("leave-room", async ({ roomId, username }) => {
     if (!rooms[roomId]) return;
-
     rooms[roomId] = rooms[roomId].filter(user => user !== username);
     if (hosts[roomId] === username) hosts[roomId] = rooms[roomId][0] || null;
 
@@ -128,11 +139,9 @@ io.on("connection", (socket) => {
 
     const timestamp = new Date().toISOString();
     const commitHash = `${timestamp}-${Math.random().toString(36).substr(2, 5)}`;
-    const commitEntry = { commitHash, timestamp, commitMessage, language, code };
+    commitHistory[roomId].push({ commitHash, timestamp, commitMessage, language, code });
 
-    commitHistory[roomId].push(commitEntry);
     await saveData();
-
     io.to(roomId).emit("commit-history", commitHistory[roomId].map(c => `${c.commitHash} - ${c.commitMessage}`));
   });
 
@@ -160,10 +169,8 @@ io.on("connection", (socket) => {
   });
 
   socket.on("load-shared-code", ({ shareId }) => {
-    const code = sharedCode[shareId];
-    io.to(socket.id).emit(code ? "shared-code-loaded" : "shared-code-error", code ? { code } : { message: "Shared code not found!" });
+    io.to(socket.id).emit(sharedCode[shareId] ? "shared-code-loaded" : "shared-code-error", sharedCode[shareId] ? { code: sharedCode[shareId] } : { message: "Shared code not found!" });
   });
 });
 
-server.listen(PORT, () => console.log(`Server running on port ${PORT}`));
-s
+server.listen(PORT, () => console.log(`🚀 Server running on port ${PORT}`));
