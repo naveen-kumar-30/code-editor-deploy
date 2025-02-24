@@ -1,174 +1,148 @@
-require("dotenv").config();
+const express = require("express");
+const dotenv = require("dotenv");
+const http = require("http");
+const cors = require("cors");
+const { Server } = require("socket.io");
 const fs = require("fs");
 const path = require("path");
-const express = require("express");
-const http = require("http");
-const socketIo = require("socket.io");
+
+dotenv.config();
 
 const app = express();
+app.use(express.json());
+app.use(cors());
+
 const server = http.createServer(app);
-const io = socketIo(server, { cors: { origin: "*" } });
+const io = new Server(server, {
+  cors: { origin: "*" },
+  maxHttpBufferSize: 1e8,
+  pingTimeout: 60000,
+});
 
-const DATA_FILE = path.join(__dirname, "rooms.json");
+const DATA_FILE = path.join(__dirname, "data.json");
 
-// Helper function to load room data
-const loadRooms = () => {
-  if (!fs.existsSync(DATA_FILE)) return {};
-  return JSON.parse(fs.readFileSync(DATA_FILE, "utf8"));
+// Load initial data from JSON file
+let userSocketMap = [];
+
+const loadUserData = () => {
+  try {
+    if (fs.existsSync(DATA_FILE)) {
+      const data = fs.readFileSync(DATA_FILE, "utf8");
+      userSocketMap = JSON.parse(data);
+    }
+  } catch (err) {
+    console.error("Error loading data:", err);
+  }
 };
 
-// Helper function to save room data
-const saveRooms = (data) => {
-  fs.writeFileSync(DATA_FILE, JSON.stringify(data, null, 2), "utf8");
+// Save data asynchronously
+const saveUserData = () => {
+  fs.writeFile(DATA_FILE, JSON.stringify(userSocketMap, null, 2), (err) => {
+    if (err) console.error("Error saving data:", err);
+  });
 };
 
-// Handle Socket.IO connections
+// Load user data at startup
+loadUserData();
+
+function getUsersInRoom(roomId) {
+  return userSocketMap.filter((user) => user.roomId === roomId);
+}
+
+function getUserBySocketId(socketId) {
+  return userSocketMap.find((user) => user.socketId === socketId) || null;
+}
+
+function getRoomId(socketId) {
+  const user = getUserBySocketId(socketId);
+  return user ? user.roomId : null;
+}
+
+// 🟢 **Real-Time Event Handling**
 io.on("connection", (socket) => {
-  console.log("🔵 New user connected");
+  console.log(`User connected: ${socket.id}`);
 
-  socket.on("join-room", ({ roomId, username }) => {
-    const rooms = loadRooms();
-    if (!rooms[roomId]) {
-      rooms[roomId] = {
-        roomId,
-        users: [username],
-        host: username,
-        typingUsers: [],
-        roomCode: {},
-        chatHistory: [],
-        commitHistory: [],
-        sharedCode: {},
-      };
-    } else if (!rooms[roomId].users.includes(username)) {
-      rooms[roomId].users.push(username);
-    }
-
-    saveRooms(rooms);
-    socket.join(roomId);
-
-    io.to(socket.id).emit("sync-all-code", rooms[roomId].roomCode);
-    io.to(socket.id).emit("chat-history", rooms[roomId].chatHistory);
-    io.to(socket.id).emit("commit-history", {
-      commits: rooms[roomId].commitHistory.map(c => `${c.commitHash} - ${c.commitMessage}`),
-    });
-    io.to(roomId).emit("user-list", rooms[roomId].users);
-    io.to(roomId).emit("server-owner", rooms[roomId].host);
-  });
-
-  socket.on("code-update", ({ roomId, code, language }) => {
-    const rooms = loadRooms();
-    if (!rooms[roomId]) return;
-
-    rooms[roomId].roomCode[language] = code;
-    saveRooms(rooms);
-    io.to(roomId).emit("code-update", { code, language });
-  });
-
-  socket.on("typing", ({ roomId, username }) => {
-    const rooms = loadRooms();
-    if (!rooms[roomId]) return;
-
-    if (!rooms[roomId].typingUsers.includes(username)) {
-      rooms[roomId].typingUsers.push(username);
-    }
-
-    saveRooms(rooms);
-    io.to(roomId).emit("user-typing", rooms[roomId].typingUsers);
-  });
-
-  socket.on("stop-typing", ({ roomId, username }) => {
-    const rooms = loadRooms();
-    if (!rooms[roomId]) return;
-
-    rooms[roomId].typingUsers = rooms[roomId].typingUsers.filter(user => user !== username);
-    saveRooms(rooms);
-
-    io.to(roomId).emit("user-typing", rooms[roomId].typingUsers);
-  });
-
-  socket.on("send-message", ({ roomId, username, message }) => {
-    const rooms = loadRooms();
-    if (!rooms[roomId]) return;
-
-    const chatMessage = { username, message };
-    rooms[roomId].chatHistory.push(chatMessage);
-    saveRooms(rooms);
-
-    io.to(roomId).emit("receive-message", chatMessage);
-  });
-
-  socket.on("leave-room", ({ roomId, username }) => {
-    const rooms = loadRooms();
-    if (!rooms[roomId]) return;
-
-    rooms[roomId].users = rooms[roomId].users.filter(user => user !== username);
-    if (rooms[roomId].host === username) {
-      rooms[roomId].host = rooms[roomId].users.length > 0 ? rooms[roomId].users[0] : null;
-    }
-
-    saveRooms(rooms);
-    io.to(roomId).emit("user-list", rooms[roomId].users);
-    io.to(roomId).emit("server-owner", rooms[roomId].host);
-  });
-
-  socket.on("commit-code", ({ roomId, code, language, commitMessage }) => {
-    const rooms = loadRooms();
-    if (!rooms[roomId]) return;
-
-    const timestamp = new Date().toISOString();
-    const commitHash = `${timestamp}-${Math.random().toString(36).substr(2, 5)}`;
-
-    const commitEntry = { commitHash, timestamp, commitMessage, language, code };
-    rooms[roomId].commitHistory.push(commitEntry);
-    saveRooms(rooms);
-
-    io.to(roomId).emit("commit-history", {
-      commits: rooms[roomId].commitHistory.map(c => `${c.commitHash} - ${c.commitMessage}`),
-    });
-  });
-
-  socket.on("restore-code", ({ roomId, commitHash }) => {
-    const rooms = loadRooms();
-    if (!rooms[roomId]) return;
-
-    const commit = rooms[roomId].commitHistory.find(c => c.commitHash === commitHash);
-    if (commit) {
-      rooms[roomId].roomCode[commit.language] = commit.code;
-      saveRooms(rooms);
-
-      io.to(roomId).emit("code-update", { code: commit.code, language: commit.language });
-      io.to(roomId).emit("language-update", { language: commit.language, code: commit.code });
-    }
-  });
-
-  socket.on("generate-shareable-link", ({ roomId, code }) => {
-    const rooms = loadRooms();
-    if (!rooms[roomId]) return;
-
-    const shareId = Math.random().toString(36).substr(2, 9);
-    rooms[roomId].sharedCode[shareId] = code;
-    saveRooms(rooms);
-
-    io.to(socket.id).emit("shareable-link", { shareUrl: `http://localhost:3000/codeeditor?shared=${shareId}` });
-  });
-
-  socket.on("load-shared-code", ({ shareId }) => {
-    const rooms = loadRooms();
-    const room = Object.values(rooms).find(r => r.sharedCode[shareId]);
-
-    if (!room) {
-      io.to(socket.id).emit("shared-code-error", { message: "Shared code not found!" });
+  socket.on("JOIN_REQUEST", ({ roomId, username }) => {
+    const existingUser = getUsersInRoom(roomId).some((u) => u.username === username);
+    if (existingUser) {
+      io.to(socket.id).emit("USERNAME_EXISTS");
       return;
     }
 
-    io.to(socket.id).emit("shared-code-loaded", { code: room.sharedCode[shareId] });
+    const user = {
+      username,
+      roomId,
+      status: "ONLINE",
+      cursorPosition: 0,
+      typing: false,
+      socketId: socket.id,
+      currentFile: null,
+    };
+
+    userSocketMap.push(user);
+    socket.join(roomId);
+    saveUserData();
+
+    socket.broadcast.to(roomId).emit("USER_JOINED", { user });
+    io.to(socket.id).emit("JOIN_ACCEPTED", { user, users: getUsersInRoom(roomId) });
   });
 
-  socket.on("disconnect", () => {
-    console.log("🔴 User disconnected");
+  socket.on("TYPING_START", ({ cursorPosition }) => {
+    const user = getUserBySocketId(socket.id);
+    if (!user) return;
+
+    user.cursorPosition = cursorPosition;
+    user.typing = true;
+    socket.broadcast.to(user.roomId).emit("TYPING_START", { user });
+  });
+
+  socket.on("TYPING_PAUSE", () => {
+    const user = getUserBySocketId(socket.id);
+    if (!user) return;
+
+    user.typing = false;
+    socket.broadcast.to(user.roomId).emit("TYPING_PAUSE", { user });
+  });
+
+  socket.on("FILE_UPDATED", ({ fileId, newContent }) => {
+    const roomId = getRoomId(socket.id);
+    if (!roomId) return;
+
+    setTimeout(() => {
+      socket.broadcast.to(roomId).emit("FILE_UPDATED", { fileId, newContent });
+    }, 50);
+  });
+
+  socket.on("disconnecting", () => {
+    const user = getUserBySocketId(socket.id);
+    if (!user) return;
+
+    const roomId = user.roomId;
+    userSocketMap = userSocketMap.filter((u) => u.socketId !== socket.id);
+    saveUserData();
+
+    socket.broadcast.to(roomId).emit("USER_DISCONNECTED", { user });
+  });
+
+  socket.on("SEND_MESSAGE", ({ message }) => {
+    const roomId = getRoomId(socket.id);
+    if (!roomId) return;
+    socket.broadcast.to(roomId).emit("RECEIVE_MESSAGE", { message });
+  });
+
+  socket.on("SYNC_DRAWING", ({ drawingData }) => {
+    const roomId = getRoomId(socket.id);
+    if (!roomId) return;
+    socket.broadcast.to(roomId).emit("SYNC_DRAWING", { drawingData });
   });
 });
 
-// Start Server
-const PORT = process.env.PORT || 5000;
-server.listen(PORT, () => console.log(`🚀 Server running on port ${PORT}`));
+const PORT = process.env.PORT || 3000;
+
+app.get("/", (req, res) => {
+  res.send("Real-time Collaborative Code Editor Backend is Running!");
+});
+
+server.listen(PORT, () => {
+  console.log(`🚀 Server running on port ${PORT}`);
+});
