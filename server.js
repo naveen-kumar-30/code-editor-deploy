@@ -22,25 +22,15 @@ const io = new Server(server, {
 });
 
 const DATA_FILE = path.join(__dirname, "data.json");
-let userSocketMap = [];
+let userSocketMap = []; // Ensure it remains an array
 
-// 🟢 **Load initial data from JSON file**
+// Load initial data from JSON file
 const loadUserData = () => {
   try {
     if (fs.existsSync(DATA_FILE)) {
-      const data = fs.readFileSync(DATA_FILE, "utf8").trim();
-
-      // Fix empty JSON issue
-      if (!data) {
-        fs.writeFileSync(DATA_FILE, "[]");
-        userSocketMap = [];
-        return;
-      }
-
-      userSocketMap = JSON.parse(data);
-      if (!Array.isArray(userSocketMap)) {
-        userSocketMap = [];
-      }
+      const data = fs.readFileSync(DATA_FILE, "utf8");
+      const parsedData = JSON.parse(data);
+      userSocketMap = Array.isArray(parsedData) ? parsedData : [];
     }
   } catch (err) {
     console.error("Error loading data:", err);
@@ -48,7 +38,7 @@ const loadUserData = () => {
   }
 };
 
-// 🟢 **Save data asynchronously**
+// Save data asynchronously
 const saveUserData = () => {
   fs.writeFile(DATA_FILE, JSON.stringify(userSocketMap, null, 2), (err) => {
     if (err) console.error("Error saving data:", err);
@@ -194,7 +184,7 @@ server.listen(PORT, () => {
   console.log(`🚀 Server running on port ${PORT}`);
 });
 
-// 🟢 **Handle graceful shutdown**
+// Handle graceful shutdown
 const shutdownServer = () => {
   console.log("Shutting down server...");
   saveUserData();
