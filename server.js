@@ -22,21 +22,33 @@ const io = new Server(server, {
 });
 
 const DATA_FILE = path.join(__dirname, "data.json");
-let userSocketMap = []; // Ensure it's initialized as an array
+let userSocketMap = [];
 
-// Load initial data from JSON file
+// 🟢 **Load initial data from JSON file**
 const loadUserData = () => {
   try {
     if (fs.existsSync(DATA_FILE)) {
-      const data = fs.readFileSync(DATA_FILE, "utf8");
+      const data = fs.readFileSync(DATA_FILE, "utf8").trim();
+
+      // Fix empty JSON issue
+      if (!data) {
+        fs.writeFileSync(DATA_FILE, "[]");
+        userSocketMap = [];
+        return;
+      }
+
       userSocketMap = JSON.parse(data);
+      if (!Array.isArray(userSocketMap)) {
+        userSocketMap = [];
+      }
     }
   } catch (err) {
     console.error("Error loading data:", err);
+    userSocketMap = [];
   }
 };
 
-// Save data asynchronously
+// 🟢 **Save data asynchronously**
 const saveUserData = () => {
   fs.writeFile(DATA_FILE, JSON.stringify(userSocketMap, null, 2), (err) => {
     if (err) console.error("Error saving data:", err);
@@ -65,6 +77,8 @@ io.on("connection", (socket) => {
 
   socket.on("JOIN_REQUEST", ({ roomId, username }) => {
     try {
+      if (!roomId || !username) return;
+
       const existingUser = getUsersInRoom(roomId).some((u) => u.username === username);
       if (existingUser) {
         io.to(socket.id).emit("USERNAME_EXISTS");
@@ -120,7 +134,7 @@ io.on("connection", (socket) => {
   socket.on("FILE_UPDATED", ({ fileId, newContent }) => {
     try {
       const roomId = getRoomId(socket.id);
-      if (!roomId) return;
+      if (!roomId || !fileId) return;
 
       setTimeout(() => {
         socket.broadcast.to(roomId).emit("FILE_UPDATED", { fileId, newContent });
@@ -139,7 +153,9 @@ io.on("connection", (socket) => {
       userSocketMap = userSocketMap.filter((u) => u.socketId !== socket.id);
       saveUserData();
 
-      socket.broadcast.to(roomId).emit("USER_DISCONNECTED", { user });
+      if (roomId) {
+        socket.broadcast.to(roomId).emit("USER_DISCONNECTED", { user });
+      }
     } catch (err) {
       console.error("Error in disconnecting:", err);
     }
@@ -148,7 +164,8 @@ io.on("connection", (socket) => {
   socket.on("SEND_MESSAGE", ({ message }) => {
     try {
       const roomId = getRoomId(socket.id);
-      if (!roomId) return;
+      if (!roomId || !message) return;
+
       socket.broadcast.to(roomId).emit("RECEIVE_MESSAGE", { message });
     } catch (err) {
       console.error("Error in SEND_MESSAGE:", err);
@@ -158,7 +175,8 @@ io.on("connection", (socket) => {
   socket.on("SYNC_DRAWING", ({ drawingData }) => {
     try {
       const roomId = getRoomId(socket.id);
-      if (!roomId) return;
+      if (!roomId || !drawingData) return;
+
       socket.broadcast.to(roomId).emit("SYNC_DRAWING", { drawingData });
     } catch (err) {
       console.error("Error in SYNC_DRAWING:", err);
@@ -176,15 +194,12 @@ server.listen(PORT, () => {
   console.log(`🚀 Server running on port ${PORT}`);
 });
 
-// Handle graceful shutdown
-process.on("SIGINT", () => {
+// 🟢 **Handle graceful shutdown**
+const shutdownServer = () => {
   console.log("Shutting down server...");
   saveUserData();
   process.exit();
-});
+};
 
-process.on("SIGTERM", () => {
-  console.log("Server terminating...");
-  saveUserData();
-  process.exit();
-});
+process.on("SIGINT", shutdownServer);
+process.on("SIGTERM", shutdownServer);
