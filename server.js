@@ -5,25 +5,26 @@ const cors = require("cors");
 const { Server } = require("socket.io");
 const fs = require("fs");
 const path = require("path");
+const compression = require("compression");
 
 dotenv.config();
 
 const app = express();
 app.use(express.json());
-app.use(cors());
+app.use(cors({ origin: process.env.ALLOWED_ORIGINS || "*" }));
+app.use(compression()); // Optimize response size
 
 const server = http.createServer(app);
 const io = new Server(server, {
-  cors: { origin: "*" },
+  cors: { origin: process.env.ALLOWED_ORIGINS || "*" },
   maxHttpBufferSize: 1e8,
   pingTimeout: 60000,
 });
 
 const DATA_FILE = path.join(__dirname, "data.json");
+let userSocketMap = []; // Ensure it's initialized as an array
 
 // Load initial data from JSON file
-let userSocketMap = [];
-
 const loadUserData = () => {
   try {
     if (fs.existsSync(DATA_FILE)) {
@@ -63,77 +64,105 @@ io.on("connection", (socket) => {
   console.log(`User connected: ${socket.id}`);
 
   socket.on("JOIN_REQUEST", ({ roomId, username }) => {
-    const existingUser = getUsersInRoom(roomId).some((u) => u.username === username);
-    if (existingUser) {
-      io.to(socket.id).emit("USERNAME_EXISTS");
-      return;
+    try {
+      const existingUser = getUsersInRoom(roomId).some((u) => u.username === username);
+      if (existingUser) {
+        io.to(socket.id).emit("USERNAME_EXISTS");
+        return;
+      }
+
+      const user = {
+        username,
+        roomId,
+        status: "ONLINE",
+        cursorPosition: 0,
+        typing: false,
+        socketId: socket.id,
+        currentFile: null,
+      };
+
+      userSocketMap.push(user);
+      socket.join(roomId);
+      saveUserData();
+
+      socket.broadcast.to(roomId).emit("USER_JOINED", { user });
+      io.to(socket.id).emit("JOIN_ACCEPTED", { user, users: getUsersInRoom(roomId) });
+    } catch (err) {
+      console.error("Error in JOIN_REQUEST:", err);
     }
-
-    const user = {
-      username,
-      roomId,
-      status: "ONLINE",
-      cursorPosition: 0,
-      typing: false,
-      socketId: socket.id,
-      currentFile: null,
-    };
-
-    userSocketMap.push(user);
-    socket.join(roomId);
-    saveUserData();
-
-    socket.broadcast.to(roomId).emit("USER_JOINED", { user });
-    io.to(socket.id).emit("JOIN_ACCEPTED", { user, users: getUsersInRoom(roomId) });
   });
 
   socket.on("TYPING_START", ({ cursorPosition }) => {
-    const user = getUserBySocketId(socket.id);
-    if (!user) return;
+    try {
+      const user = getUserBySocketId(socket.id);
+      if (!user) return;
 
-    user.cursorPosition = cursorPosition;
-    user.typing = true;
-    socket.broadcast.to(user.roomId).emit("TYPING_START", { user });
+      user.cursorPosition = cursorPosition;
+      user.typing = true;
+      socket.broadcast.to(user.roomId).emit("TYPING_START", { user });
+    } catch (err) {
+      console.error("Error in TYPING_START:", err);
+    }
   });
 
   socket.on("TYPING_PAUSE", () => {
-    const user = getUserBySocketId(socket.id);
-    if (!user) return;
+    try {
+      const user = getUserBySocketId(socket.id);
+      if (!user) return;
 
-    user.typing = false;
-    socket.broadcast.to(user.roomId).emit("TYPING_PAUSE", { user });
+      user.typing = false;
+      socket.broadcast.to(user.roomId).emit("TYPING_PAUSE", { user });
+    } catch (err) {
+      console.error("Error in TYPING_PAUSE:", err);
+    }
   });
 
   socket.on("FILE_UPDATED", ({ fileId, newContent }) => {
-    const roomId = getRoomId(socket.id);
-    if (!roomId) return;
+    try {
+      const roomId = getRoomId(socket.id);
+      if (!roomId) return;
 
-    setTimeout(() => {
-      socket.broadcast.to(roomId).emit("FILE_UPDATED", { fileId, newContent });
-    }, 50);
+      setTimeout(() => {
+        socket.broadcast.to(roomId).emit("FILE_UPDATED", { fileId, newContent });
+      }, 50);
+    } catch (err) {
+      console.error("Error in FILE_UPDATED:", err);
+    }
   });
 
   socket.on("disconnecting", () => {
-    const user = getUserBySocketId(socket.id);
-    if (!user) return;
+    try {
+      const user = getUserBySocketId(socket.id);
+      if (!user) return;
 
-    const roomId = user.roomId;
-    userSocketMap = userSocketMap.filter((u) => u.socketId !== socket.id);
-    saveUserData();
+      const roomId = user.roomId;
+      userSocketMap = userSocketMap.filter((u) => u.socketId !== socket.id);
+      saveUserData();
 
-    socket.broadcast.to(roomId).emit("USER_DISCONNECTED", { user });
+      socket.broadcast.to(roomId).emit("USER_DISCONNECTED", { user });
+    } catch (err) {
+      console.error("Error in disconnecting:", err);
+    }
   });
 
   socket.on("SEND_MESSAGE", ({ message }) => {
-    const roomId = getRoomId(socket.id);
-    if (!roomId) return;
-    socket.broadcast.to(roomId).emit("RECEIVE_MESSAGE", { message });
+    try {
+      const roomId = getRoomId(socket.id);
+      if (!roomId) return;
+      socket.broadcast.to(roomId).emit("RECEIVE_MESSAGE", { message });
+    } catch (err) {
+      console.error("Error in SEND_MESSAGE:", err);
+    }
   });
 
   socket.on("SYNC_DRAWING", ({ drawingData }) => {
-    const roomId = getRoomId(socket.id);
-    if (!roomId) return;
-    socket.broadcast.to(roomId).emit("SYNC_DRAWING", { drawingData });
+    try {
+      const roomId = getRoomId(socket.id);
+      if (!roomId) return;
+      socket.broadcast.to(roomId).emit("SYNC_DRAWING", { drawingData });
+    } catch (err) {
+      console.error("Error in SYNC_DRAWING:", err);
+    }
   });
 });
 
@@ -145,4 +174,17 @@ app.get("/", (req, res) => {
 
 server.listen(PORT, () => {
   console.log(`🚀 Server running on port ${PORT}`);
+});
+
+// Handle graceful shutdown
+process.on("SIGINT", () => {
+  console.log("Shutting down server...");
+  saveUserData();
+  process.exit();
+});
+
+process.on("SIGTERM", () => {
+  console.log("Server terminating...");
+  saveUserData();
+  process.exit();
 });
