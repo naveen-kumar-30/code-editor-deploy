@@ -11,24 +11,23 @@ const io = socketIo(server, { cors: { origin: "*" } });
 
 const DATA_FILE = path.join(__dirname, "rooms.json");
 
-// Helper function to load data
+// Helper function to load room data
 const loadRooms = () => {
   if (!fs.existsSync(DATA_FILE)) return {};
   return JSON.parse(fs.readFileSync(DATA_FILE, "utf8"));
 };
 
-// Helper function to save data
+// Helper function to save room data
 const saveRooms = (data) => {
   fs.writeFileSync(DATA_FILE, JSON.stringify(data, null, 2), "utf8");
 };
 
-// Socket.io Handling
+// Handle Socket.IO connections
 io.on("connection", (socket) => {
   console.log("🔵 New user connected");
 
   socket.on("join-room", ({ roomId, username }) => {
     const rooms = loadRooms();
-
     if (!rooms[roomId]) {
       rooms[roomId] = {
         roomId,
@@ -163,6 +162,10 @@ io.on("connection", (socket) => {
     }
 
     io.to(socket.id).emit("shared-code-loaded", { code: room.sharedCode[shareId] });
+  });
+
+  socket.on("disconnect", () => {
+    console.log("🔴 User disconnected");
   });
 });
 
