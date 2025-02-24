@@ -6,7 +6,7 @@ const socketIo = require("socket.io");
 
 // Initialize the express app
 const app = express();
-const PORT = process.env.PORT || 5000;  // Use Render's dynamic port or fallback to 5000
+const PORT = process.env.PORT || 5000;
 const server = http.createServer(app);
 const io = socketIo(server, { cors: { origin: "*" } });
 
@@ -14,8 +14,9 @@ const DATA_FILE = path.join(__dirname, "data.json");
 
 // Load existing data or initialize empty
 let { rooms, hosts, typingUsers, roomCode, sharedCode } = loadData();
-let chatHistory = {};  // ✅ Stores chat messages for each room
-let commitHistory = {};  // ✅ Stores commit history for each room
+let chatHistory = {};
+let commitHistory = {};
+let lastCodeUpdate = {};  // ✅ Tracks last update per room/language to prevent rapid updates
 
 function loadData() {
   try {
@@ -59,10 +60,21 @@ io.on("connection", (socket) => {
     io.to(roomId).emit("server-owner", hosts[roomId]);
   });
 
+  // ✅ Optimized Code Updates (Throttle to prevent lag)
   socket.on("code-update", ({ roomId, code, language }) => {
     if (!roomCode[roomId]) roomCode[roomId] = {};
+
+    // Prevent excessive updates (throttling)
+    const now = Date.now();
+    if (lastCodeUpdate[roomId]?.[language] && now - lastCodeUpdate[roomId][language] < 100) {
+      return;
+    }
+    lastCodeUpdate[roomId] = lastCodeUpdate[roomId] || {};
+    lastCodeUpdate[roomId][language] = now;
+
     roomCode[roomId][language] = code;
     saveData();
+    
     io.to(roomId).emit("code-update", { code, language });
   });
 
@@ -71,6 +83,7 @@ io.on("connection", (socket) => {
     io.to(roomId).emit("language-update", { language, code: savedCode });
   });
 
+  // ✅ Optimized Typing Indicator Handling
   socket.on("typing", ({ roomId, username }) => {
     if (!typingUsers[roomId]) typingUsers[roomId] = new Set();
     typingUsers[roomId].add(username);
@@ -84,7 +97,6 @@ io.on("connection", (socket) => {
     }
   });
 
-  // ✅ Handle chat messages
   socket.on("send-message", ({ roomId, username, message }) => {
     if (!chatHistory[roomId]) chatHistory[roomId] = [];
     const chatMessage = { username, message };
@@ -122,7 +134,7 @@ io.on("connection", (socket) => {
     if (!commitHistory[roomId]) commitHistory[roomId] = [];
 
     const timestamp = new Date().toISOString();
-    const commitHash = `${timestamp}-${Math.random().toString(36).substr(2, 5)}`; // Unique ID
+    const commitHash = `${timestamp}-${Math.random().toString(36).substr(2, 5)}`;
     const commitEntry = { commitHash, timestamp, commitMessage, language, code };
 
     commitHistory[roomId].push(commitEntry);
@@ -138,26 +150,23 @@ io.on("connection", (socket) => {
   socket.on("restore-code", ({ roomId, commitHash }) => {
     const commit = commitHistory[roomId]?.find(c => c.commitHash === commitHash);
     if (commit) {
-      roomCode[roomId] = { ...roomCode[roomId], [commit.language]: commit.code };  // Restore code in room
+      roomCode[roomId] = { ...roomCode[roomId], [commit.language]: commit.code };
       saveData();
 
-      // Send restored code and language to all users in the room
       io.to(roomId).emit("code-update", { code: commit.code, language: commit.language });
       io.to(roomId).emit("language-update", { language: commit.language, code: commit.code });
     }
   });
 
-  // ✅ Handle generating a shareable link
   socket.on("generate-shareable-link", ({ code }) => {
     const shareId = Math.random().toString(36).substr(2, 9);
-    sharedCode[shareId] = code;  // Store in-memory & persist
+    sharedCode[shareId] = code;
     saveData();
 
     const shareUrl = `http://localhost:3000/codeeditor?shared=${shareId}`;
     io.to(socket.id).emit("shareable-link", { shareUrl });
   });
 
-  // ✅ Load shared code
   socket.on("load-shared-code", ({ shareId }) => {
     const code = sharedCode[shareId];
     if (code) {
@@ -168,7 +177,6 @@ io.on("connection", (socket) => {
   });
 });
 
-// Start server
 server.listen(PORT, () => {
   console.log(`Server is running on port ${PORT}`);
 });
