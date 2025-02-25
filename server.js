@@ -13,11 +13,11 @@ const io = require("socket.io")(server, {
   pingInterval: 25000
 });
 
-
+// Connect to Redis
 const redis = new Redis({
   host: "127.0.0.1",
   port: 6379,
-  password: "2seyjHfM4uHz4kHxtfymxRgh2A7GaULg",  // Use your actual Redis password
+  password: "2seyjHfM4uHz4kHxtfymxRgh2A7GaULg",
 });
 
 // Data file for backup (keep this as a backup option)
@@ -334,7 +334,7 @@ setInterval(async () => {
 }, 3600000); // Every hour
 
 // Start server
-const PORT = process.env.PORT || 5000;
+const PORT = process.env.PORT || 12000;
 server.listen(PORT, () => {
   console.log(`Server running on port ${PORT}`);
 });
