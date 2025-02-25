@@ -13,11 +13,11 @@ const io = require("socket.io")(server, {
   pingInterval: 25000
 });
 
-// Connect to Redis
+
 const redis = new Redis({
-  host: "profound-tapir-19932.upstash.io",  // Default Redis host
-  port: 6379,         // Default Redis port
-  password: "AU3cAAIjcDEzYTRjNjljYWZhZmM0YTE1OTIwZTAxN2UzNDdkMzFmYnAxMA", // Uncomment if you have a password
+  host: "127.0.0.1",
+  port: 6379,
+  password: "2seyjHfM4uHz4kHxtfymxRgh2A7GaULg",  // Use your actual Redis password
 });
 
 // Data file for backup (keep this as a backup option)
