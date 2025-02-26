@@ -2,29 +2,23 @@ const fs = require("fs");
 const path = require("path");
 const express = require("express");
 const http = require("http");
+const socketIo = require("socket.io");
 
-// Create Express app and HTTP server
 const app = express();
 const server = http.createServer(app);
-const io = require("socket.io")(server, {
-  cors: { origin: "*" },
-  pingTimeout: 60000,
-  pingInterval: 25000
-});
+const io = socketIo(server, { cors: { origin: "*" } });
 
-// Data file for JSON storage
 const DATA_FILE = path.join(__dirname, "data.json");
 
-// Initialize in-memory data structures
+// Initialize in-memory storage
 let rooms = {};
 let hosts = {};
-let typingUsers = {};
 let roomCode = {};
-let sharedCode = {};
 let commitHistory = {};
 let chatHistory = {};
+let typingUsers = {};
 
-// Load initial data from file
+// Load data from JSON file
 function loadData() {
   try {
     if (fs.existsSync(DATA_FILE)) {
@@ -32,45 +26,43 @@ function loadData() {
       rooms = data.rooms || {};
       hosts = data.hosts || {};
       roomCode = data.roomCode || {};
-      sharedCode = data.sharedCode || {};
       commitHistory = data.commitHistory || {};
       chatHistory = data.chatHistory || {};
-      typingUsers = {};
-      for (const roomId in data.typingUsers || {}) {
-        typingUsers[roomId] = new Set(data.typingUsers[roomId] || []);
-      }
+      typingUsers = Object.fromEntries(
+        Object.entries(data.typingUsers || {}).map(([k, v]) => [k, new Set(v)])
+      );
     }
   } catch (error) {
-    console.error("Error loading data from file:", error);
+    console.error("Error loading data:", error);
   }
 }
-
-// Save data to file
-function saveData() {
-  try {
-    fs.writeFileSync(DATA_FILE, JSON.stringify({
-      rooms,
-      hosts,
-      typingUsers: Object.fromEntries(Object.entries(typingUsers).map(([k, v]) => [k, [...v]])),
-      roomCode,
-      sharedCode,
-      commitHistory,
-      chatHistory
-    }, null, 2));
-  } catch (err) {
-    console.error("Error saving data to file:", err);
-  }
-}
-
-// Load data initially
 loadData();
 
-// Track socket to room mappings
+// Debounced save function
+let saveTimeout = null;
+function saveData() {
+  if (saveTimeout) clearTimeout(saveTimeout);
+  saveTimeout = setTimeout(() => {
+    fs.writeFile(DATA_FILE, JSON.stringify({
+      rooms,
+      hosts,
+      roomCode,
+      commitHistory,
+      chatHistory,
+      typingUsers: Object.fromEntries(
+        Object.entries(typingUsers).map(([k, v]) => [k, Array.from(v)])
+      ),
+    }, null, 2), (err) => {
+      if (err) console.error("Error saving data:", err);
+    });
+  }, 500);
+}
+
+// Store socket-user mappings
 const socketRooms = new Map();
 
-// Socket.IO connection handling
 io.on("connection", (socket) => {
-  console.log("New user connected:", socket.id);
+  console.log("User connected:", socket.id);
 
   socket.on("join-room", ({ roomId, username }) => {
     socketRooms.set(socket.id, { roomId, username });
@@ -93,13 +85,15 @@ io.on("connection", (socket) => {
     }
 
     saveData();
-    
+
     socket.emit("sync-all-code", roomCode[roomId]);
     socket.emit("chat-history", chatHistory[roomId]);
     socket.emit("commit-history", {
-      commits: (commitHistory[roomId] || []).map(c => `${c.commitHash} - ${c.commitMessage}`)
+      commits: (commitHistory[roomId] || []).map(
+        (c) => `${c.commitHash} - ${c.commitMessage}`
+      ),
     });
-    
+
     io.to(roomId).emit("user-list", rooms[roomId]);
     io.to(roomId).emit("server-owner", hosts[roomId]);
   });
@@ -107,57 +101,65 @@ io.on("connection", (socket) => {
   socket.on("code-update", ({ roomId, code, language }) => {
     if (!roomCode[roomId]) roomCode[roomId] = {};
     roomCode[roomId][language] = code;
+
+    io.to(roomId).emit("code-update", { code, language });
+
     saveData();
-    socket.to(roomId).emit("code-update", { code, language });
+  });
+
+  socket.on("typing", ({ roomId, username }) => {
+    if (!typingUsers[roomId]) typingUsers[roomId] = new Set();
+    typingUsers[roomId].add(username);
+
+    io.to(roomId).emit("user-typing", Array.from(typingUsers[roomId]));
   });
 
   socket.on("send-message", ({ roomId, username, message }) => {
     if (!chatHistory[roomId]) chatHistory[roomId] = [];
-    chatHistory[roomId].push({ username, message, timestamp: Date.now() });
+
+    const chatMessage = { username, message, timestamp: Date.now() };
+
+    chatHistory[roomId].push(chatMessage);
     if (chatHistory[roomId].length > 100) {
       chatHistory[roomId] = chatHistory[roomId].slice(-100);
     }
+
+    io.to(roomId).emit("receive-message", chatMessage);
+
     saveData();
-    io.to(roomId).emit("receive-message", chatHistory[roomId].slice(-1)[0]);
   });
 
   socket.on("disconnect", () => {
     const userInfo = socketRooms.get(socket.id);
     if (userInfo) {
-      const { roomId, username } = userInfo;
-      handleUserLeave(roomId, username);
+      handleUserLeave(userInfo.roomId, userInfo.username);
       socketRooms.delete(socket.id);
     }
   });
 
+  socket.on("leave-room", ({ roomId, username }) => {
+    handleUserLeave(roomId, username);
+  });
+
   function handleUserLeave(roomId, username) {
     if (rooms[roomId]) {
-      rooms[roomId] = rooms[roomId].filter(user => user !== username);
+      rooms[roomId] = rooms[roomId].filter((user) => user !== username);
+
       if (typingUsers[roomId]) {
         typingUsers[roomId].delete(username);
         io.to(roomId).emit("user-typing", Array.from(typingUsers[roomId]));
       }
+
       if (hosts[roomId] === username) {
         hosts[roomId] = rooms[roomId].length > 0 ? rooms[roomId][0] : null;
         io.to(roomId).emit("server-owner", hosts[roomId]);
       }
+
       io.to(roomId).emit("user-list", rooms[roomId]);
       saveData();
     }
   }
 });
-
-// Cleanup shared code every hour
-setInterval(() => {
-  const now = Date.now();
-  const ONE_WEEK = 7 * 24 * 60 * 60 * 1000;
-  Object.keys(sharedCode).forEach(shareId => {
-    if (sharedCode[shareId].createdAt && (now - sharedCode[shareId].createdAt > ONE_WEEK)) {
-      delete sharedCode[shareId];
-    }
-  });
-  saveData();
-}, 3600000);
 
 const PORT = process.env.PORT || 5000;
 server.listen(PORT, () => {
