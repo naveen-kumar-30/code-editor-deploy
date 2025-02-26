@@ -49,9 +49,9 @@ function saveData() {
       roomCode,
       commitHistory,
       chatHistory,
-      typingUsers: Object.fromEntries(
-        Object.entries(typingUsers).map(([k, v]) => [k, Array.from(v)])
-      ),
+      typingUsers = Object.fromEntries(
+  Object.entries(data.typingUsers || {}).map(([k, v]) => [k, new Set(v || [])])
+),
     }, null, 2), (err) => {
       if (err) console.error("Error saving data:", err);
     });
