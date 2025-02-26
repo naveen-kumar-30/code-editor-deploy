@@ -4,11 +4,12 @@
   "main": "index.js",
   "type": "commonjs",
   "scripts": {
-    "start": "node index.js",
-    "dev": "nodemon index.js",
-    "build": "echo 'No build step needed'",
-    "test": "echo \"Error: no test specified\" && exit 1"
-  },
+  "start": "node index.js",
+  "dev": "nodemon index.js",
+  "build": "npm install",
+  "install": "npm install",
+  "test": "echo \"Error: no test specified\" && exit 1"
+},
   "dependencies": {
     "@octokit/rest": "^21.1.1",
     "@uiw/react-codemirror": "^4.23.8",
