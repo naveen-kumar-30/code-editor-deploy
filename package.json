@@ -2,14 +2,16 @@
   "name": "compiler-webpage",
   "version": "1.0.0",
   "main": "index.js",
-  "type": "commonjs",
   "scripts": {
-  "start": "node index.js",
-  "dev": "nodemon index.js",
-  "build": "npm install",
-  "install": "npm install",
-  "test": "echo \"Error: no test specified\" && exit 1"
-},
+    "start": "node index.js",
+    "dev": "nodemon index.js",
+    "test": "echo \"Error: no test specified\" && exit 1"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "type": "commonjs",
+  "description": "",
   "dependencies": {
     "@octokit/rest": "^21.1.1",
     "@uiw/react-codemirror": "^4.23.8",
@@ -32,8 +34,5 @@
     "socket.io": "^4.8.1",
     "socket.io-client": "^4.8.1",
     "ws": "^8.18.0"
-  },
-  "engines": {
-    "node": ">=16.0.0"
   }
 }
