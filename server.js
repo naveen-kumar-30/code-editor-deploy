@@ -1,7 +1,11 @@
 const fs = require("fs");
 const path = require("path");
-const io = require("socket.io")(5000, {
-  cors: { origin: "*" }
+require("dotenv").config(); // Load environment variables
+
+const PORT = process.env.PORT || 5000;
+
+const io = require("socket.io")(PORT, {
+  cors: { origin: process.env.CLIENT_URL || "*" } // Use an environment variable for production
 });
 
 const DATA_FILE = path.join(__dirname, "data.json");
@@ -129,18 +133,17 @@ io.on("connection", (socket) => {
     io.to(socket.id).emit("commit-history", { commits: commitHistory[roomId] ? commitHistory[roomId].map(c => `${c.commitHash} - ${c.commitMessage}`) : [] });
   });
 
- socket.on("restore-code", ({ roomId, commitHash }) => {
-  const commit = commitHistory[roomId]?.find(c => c.commitHash === commitHash);
-  if (commit) {
-    roomCode[roomId] = { ...roomCode[roomId], [commit.language]: commit.code };  // Restore code in room
-    saveData();
+  socket.on("restore-code", ({ roomId, commitHash }) => {
+    const commit = commitHistory[roomId]?.find(c => c.commitHash === commitHash);
+    if (commit) {
+      roomCode[roomId] = { ...roomCode[roomId], [commit.language]: commit.code };  // Restore code in room
+      saveData();
 
-    // Send restored code and language to all users in the room
-    io.to(roomId).emit("code-update", { code: commit.code, language: commit.language });
-    io.to(roomId).emit("language-update", { language: commit.language, code: commit.code });
-  }
-});
-
+      // Send restored code and language to all users in the room
+      io.to(roomId).emit("code-update", { code: commit.code, language: commit.language });
+      io.to(roomId).emit("language-update", { language: commit.language, code: commit.code });
+    }
+  });
 
   // ✅ Handle generating a shareable link
   socket.on("generate-shareable-link", ({ code }) => {
@@ -148,7 +151,7 @@ io.on("connection", (socket) => {
     sharedCode[shareId] = code;  // Store in-memory & persist
     saveData();
 
-    const shareUrl = `http://localhost:3000/codeeditor?shared=${shareId}`;
+    const shareUrl = `${process.env.CLIENT_URL || "http://localhost:3000"}/codeeditor?shared=${shareId}`;
     io.to(socket.id).emit("shareable-link", { shareUrl });
   });
 
@@ -162,3 +165,5 @@ io.on("connection", (socket) => {
     }
   });
 });
+
+console.log(`Server running on port ${PORT}`);
