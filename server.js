@@ -28,9 +28,13 @@ function loadData() {
       roomCode = data.roomCode || {};
       commitHistory = data.commitHistory || {};
       chatHistory = data.chatHistory || {};
-      typingUsers = Object.fromEntries(
-        Object.entries(data.typingUsers || {}).map(([k, v]) => [k, new Set(v)])
-      );
+      typingUsers = {};
+
+      if (data.typingUsers) {
+        for (const [roomId, userList] of Object.entries(data.typingUsers)) {
+          typingUsers[roomId] = new Set(Array.isArray(userList) ? userList : []);
+        }
+      }
     }
   } catch (error) {
     console.error("Error loading data:", error);
@@ -43,16 +47,18 @@ let saveTimeout = null;
 function saveData() {
   if (saveTimeout) clearTimeout(saveTimeout);
   saveTimeout = setTimeout(() => {
-    fs.writeFile(DATA_FILE, JSON.stringify({
+    const dataToSave = {
       rooms,
       hosts,
       roomCode,
       commitHistory,
       chatHistory,
-      typingUsers = Object.fromEntries(
-  Object.entries(data.typingUsers || {}).map(([k, v]) => [k, new Set(v || [])])
-),
-    }, null, 2), (err) => {
+      typingUsers: Object.fromEntries(
+        Object.entries(typingUsers).map(([k, v]) => [k, [...v]])
+      ),
+    };
+
+    fs.writeFile(DATA_FILE, JSON.stringify(dataToSave, null, 2), (err) => {
       if (err) console.error("Error saving data:", err);
     });
   }, 500);
