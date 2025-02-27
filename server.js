@@ -1,17 +1,16 @@
-// Import necessary modules
 const fs = require("fs");
 const path = require("path");
 const io = require("socket.io")(5000, {
-  cors: { origin: "*" } // CORS setup for allowing cross-origin requests
+  cors: { origin: "*" }
 });
 
 const DATA_FILE = path.join(__dirname, "data.json");
 
 // Load existing data or initialize empty
-let { rooms, hosts, typingUsers, roomCode, sharedCode, commitHistory } = loadData();
-let chatHistory = {};  // Stores chat messages for each room
+let { rooms, hosts, typingUsers, roomCode, sharedCode } = loadData();
+let chatHistory = {};  // ✅ Stores chat messages for each room
+let commitHistory = {};  // ✅ Stores commit history for each room
 
-// Load existing data from the data.json file
 function loadData() {
   try {
     if (fs.existsSync(DATA_FILE)) {
@@ -20,23 +19,19 @@ function loadData() {
   } catch (error) {
     console.error("Error loading data:", error);
   }
-  return { rooms: {}, hosts: {}, typingUsers: {}, roomCode: {}, sharedCode: {}, commitHistory: {} };
+  return { rooms: {}, hosts: {}, typingUsers: {}, roomCode: {}, sharedCode: {} };
 }
 
-// Save the updated data to the data.json file
 function saveData() {
   fs.writeFileSync(DATA_FILE, JSON.stringify({ rooms, hosts, typingUsers, roomCode, commitHistory, sharedCode }, null, 2));
 }
 
-// Socket.io connection event
 io.on("connection", (socket) => {
   console.log("New user connected");
 
-  // User joins a room
   socket.on("join-room", ({ roomId, username }) => {
     socket.join(roomId);
 
-    // Initialize room data if not already present
     if (!rooms[roomId]) {
       rooms[roomId] = [];
       hosts[roomId] = username;
@@ -51,7 +46,6 @@ io.on("connection", (socket) => {
 
     saveData();
 
-    // Sync code, chat history, and commit history with the new user
     io.to(socket.id).emit("sync-all-code", roomCode[roomId]);
     io.to(socket.id).emit("chat-history", chatHistory[roomId]);
     io.to(socket.id).emit("commit-history", { commits: commitHistory[roomId].map(c => `${c.commitHash} - ${c.commitMessage}`) });
@@ -59,7 +53,6 @@ io.on("connection", (socket) => {
     io.to(roomId).emit("server-owner", hosts[roomId]);
   });
 
-  // Update the code in the room
   socket.on("code-update", ({ roomId, code, language }) => {
     if (!roomCode[roomId]) roomCode[roomId] = {};
     roomCode[roomId][language] = code;
@@ -67,20 +60,17 @@ io.on("connection", (socket) => {
     io.to(roomId).emit("code-update", { code, language });
   });
 
-  // Send code for a specific language
   socket.on("language-update", ({ roomId, language }) => {
     let savedCode = roomCode[roomId]?.[language] || "// Start coding...";
     io.to(roomId).emit("language-update", { language, code: savedCode });
   });
 
-  // Typing indicator
   socket.on("typing", ({ roomId, username }) => {
     if (!typingUsers[roomId]) typingUsers[roomId] = new Set();
     typingUsers[roomId].add(username);
     io.to(roomId).emit("user-typing", Array.from(typingUsers[roomId]));
   });
 
-  // Stop typing indicator
   socket.on("stop-typing", ({ roomId, username }) => {
     if (typingUsers[roomId]) {
       typingUsers[roomId].delete(username);
@@ -88,7 +78,7 @@ io.on("connection", (socket) => {
     }
   });
 
-  // Handle sending chat messages
+  // ✅ Handle chat messages
   socket.on("send-message", ({ roomId, username, message }) => {
     if (!chatHistory[roomId]) chatHistory[roomId] = [];
     const chatMessage = { username, message };
@@ -97,7 +87,6 @@ io.on("connection", (socket) => {
     io.to(roomId).emit("receive-message", chatMessage);
   });
 
-  // User leaves the room
   socket.on("leave-room", ({ roomId, username }) => {
     if (rooms[roomId]) {
       rooms[roomId] = rooms[roomId].filter((user) => user !== username);
@@ -110,12 +99,24 @@ io.on("connection", (socket) => {
     }
   });
 
-  // Handle committing code changes
+  socket.on("disconnect", () => {
+    for (let room in rooms) {
+      rooms[room] = rooms[room].filter((user) => user !== socket.id);
+      if (hosts[room] === socket.id) {
+        hosts[room] = rooms[room].length > 0 ? rooms[room][0] : null;
+        io.to(room).emit("server-owner", hosts[room]);
+      }
+      saveData();
+      io.to(room).emit("user-list", rooms[room]);
+    }
+  });
+
+  // ✅ Handle committing code changes
   socket.on("commit-code", ({ roomId, code, language, commitMessage }) => {
     if (!commitHistory[roomId]) commitHistory[roomId] = [];
 
     const timestamp = new Date().toISOString();
-    const commitHash = `${timestamp}-${Math.random().toString(36).substr(2, 5)}`; // Unique commit hash
+    const commitHash = `${timestamp}-${Math.random().toString(36).substr(2, 5)}`; // Unique ID
     const commitEntry = { commitHash, timestamp, commitMessage, language, code };
 
     commitHistory[roomId].push(commitEntry);
@@ -124,26 +125,26 @@ io.on("connection", (socket) => {
     io.to(roomId).emit("commit-history", { commits: commitHistory[roomId].map(c => `${c.commitHash} - ${c.commitMessage}`) });
   });
 
-  // Get commit history
   socket.on("get-commit-history", ({ roomId }) => {
     io.to(socket.id).emit("commit-history", { commits: commitHistory[roomId] ? commitHistory[roomId].map(c => `${c.commitHash} - ${c.commitMessage}`) : [] });
   });
 
-  // Restore code to a previous commit
-  socket.on("restore-code", ({ roomId, commitHash }) => {
-    const commit = commitHistory[roomId]?.find(c => c.commitHash === commitHash);
-    if (commit) {
-      roomCode[roomId] = { ...roomCode[roomId], [commit.language]: commit.code };  // Restore code in room
-      saveData();
+ socket.on("restore-code", ({ roomId, commitHash }) => {
+  const commit = commitHistory[roomId]?.find(c => c.commitHash === commitHash);
+  if (commit) {
+    roomCode[roomId] = { ...roomCode[roomId], [commit.language]: commit.code };  // Restore code in room
+    saveData();
 
-      io.to(roomId).emit("code-update", { code: commit.code, language: commit.language });
-      io.to(roomId).emit("language-update", { language: commit.language, code: commit.code });
-    }
-  });
+    // Send restored code and language to all users in the room
+    io.to(roomId).emit("code-update", { code: commit.code, language: commit.language });
+    io.to(roomId).emit("language-update", { language: commit.language, code: commit.code });
+  }
+});
 
-  // Handle generating a shareable link for the code
+
+  // ✅ Handle generating a shareable link
   socket.on("generate-shareable-link", ({ code }) => {
-    const shareId = Math.random().toString(36).substr(2, 9);  // Generate a unique share ID
+    const shareId = Math.random().toString(36).substr(2, 9);
     sharedCode[shareId] = code;  // Store in-memory & persist
     saveData();
 
@@ -151,7 +152,7 @@ io.on("connection", (socket) => {
     io.to(socket.id).emit("shareable-link", { shareUrl });
   });
 
-  // Load shared code
+  // ✅ Load shared code
   socket.on("load-shared-code", ({ shareId }) => {
     const code = sharedCode[shareId];
     if (code) {
